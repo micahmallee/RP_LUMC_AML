@@ -1,0 +1,612 @@
+---
+title: "Flow_data_analysis"
+author: "Micah Mallée"
+date: '2023-06-22'
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+### Load packages and set working directory
+```{r}
+setwd('/exports/me-lcco-aml-hpc/Micah/')
+library(Seurat)
+library(patchwork)
+library(RColorBrewer)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(gridExtra)
+library(data.table)
+library(ggpubr)
+library(readxl)
+library(EnhancedVolcano)
+```
+
+
+### Load/save already processed flow data as Seurat object
+```{r}
+flow_seurat <- readRDS('flow_seurat_final.rds')
+```
+
+### Load scRNA-seq data
+```{r}
+rna_seurat <- readRDS('AML.seurat.with.clusters.v3.RDS')
+
+rna_seurat <- SetIdent(rna_seurat, value = rna_seurat$seurat_clusters)
+rna_seurat <- RenameIdents(rna_seurat, 
+                            '0' = '0', '1' = 'CD14+ Mono-like', 
+                            '2' = 'Non-cycling cluster', '3' = 'EMP-like', 
+                            '4' = 'High-ribo cluster', '5' = 'GMP-like', 
+                            '6' = 'DC-like', '7' = 'Cycling GMP-like-1', 
+                            '8' = 'Cycling GMP-like-2', '9' = 'Early-Eryth-like', 
+                            '10' = 'T-cell-like', '11' = 'CD16+ Mono-like', 
+                            '12' = 'HSP cluster', '13' = 'B-cell-like', 
+                            '14' = 'Cycling cluster', '15'= 'Late Eryth-like')
+rna_seurat$annotated_clusters <- rna_seurat@active.ident
+```
+
+
+### Load all standard needed things
+```{r}
+#### Feature vectors
+all.features_flow <- rownames(flow_seurat)
+all.proteins <- all.features_flow[! all.features_flow %in% c('SSC.H', 'SSC.A', 'FSC.H', 'FSC.A', 'Zombie.Red.A---Viability')]
+features_no_scatter <- all.features_flow[! all.features_flow %in% c('SSC.H', 'SSC.A', 'FSC.H', 'FSC.A')]
+# Exclude HLA-A2, zombieRed, include scatter
+final_clust_features <- all.features_flow[! all.features_flow %in% c('BV480.A---HLA.A2', 'Zombie.Red.A---Viability')]
+
+#### Color vectors
+load('colors.Rdata')
+load('colors.RDS')
+
+named_cluster_colors <- cluster.colors
+names(named_cluster_colors) <- c('CD16+ Mono-like', 'CD14+ Mono-like', 'DC-like', '0', 'High-ribo cluster', 'GMP-like', 'Cycling GMP-like-1', 'Cycling GMP-like-2', 'Cycling cluster', 'Non-cycling cluster', 'HSP cluster', 'EMP-like', 'Early-Eryth-like', 'Late Eryth-like', 'T-cell-like', 'B-cell-like')
+
+#### Functions
+barplot.seurat <- function(obj, id1, id2){
+
+    df.plot <- obj@meta.data %>% 
+    group_by(.[[id1]]) %>%
+    count(.[[id2]]) %>%
+    mutate(Perc = n / sum(n) * 100) 
+
+    colnames(df.plot)[1:2] <- c(id1, id2)
+
+    ggplot(df.plot, aes_string(id1, "Perc", fill = id2)) + 
+    geom_bar(stat = "Identity") + ylab("Percentage of cells") +
+    guides(x = guide_axis(angle = 90)) + theme_minimal() 
+}
+
+
+panelN_future <- c('CD69', 'CD99', 'MPO', 'CD58', 'FCGR3A',  'ADGRG1', 'CD163', 'LILRB4',  'CLEC12A', 'CD3G', 'CD3D', 'CD3E', 'CD14',
+            'HLA-A', 'HLA-B', 'HLA-C', 'PTPRC',  'ITGAX', 'ITGB3',  'MRC1', 'HLA-DPA1',
+            'HLA-DPB1', 'HLA-DQA1', 'HLA-DQB1', 'ICAM2', 'CD33',
+            'CD68', 'KIT', 'CD38',  'CD34',  'IL3RA', 'ICAM1', 'HLA-DRA', 'HLA-DRB1', 'HLA-DRB5')
+
+panelN <- c('CD58', 'FCGR3A',  'ADGRG1', 'CD163', 'LILRB4',  'CLEC12A', 'CD3G', 'CD3D', 'CD3E', 'CD14',
+            'HLA-A', 'HLA-B', 'HLA-C', 'PTPRC',  'ITGAX', 'ITGB3',  'MRC1', 'HLA-DPA1',
+            'HLA-DPB1', 'HLA-DQA1', 'HLA-DQB1', 'ICAM2', 'CD33',
+            'CD68', 'KIT', 'CD38',  'CD34',  'IL3RA', 'ICAM1', 'HLA-DRA', 'HLA-DRB1', 'HLA-DRB5')
+
+```
+
+### Reclustering based on non-unique markers
+```{r}
+non_unique <- c('PE.Cy5.A---CD117', 'BV750.A---CD45RA', 'BV605.A---CD11c', 'V450.A---CD14', 'BUV805.A---CLL.1', 'BUV563.A---GPR56')
+
+
+flow_seurat <- ScaleData(flow_seurat, features = non_unique)
+flow_seurat <- RunPCA(object = flow_seurat, features = non_unique)
+flow_seurat <- FindNeighbors(flow_seurat, dims = 1:5)
+flow_seurat <- FindClusters(flow_seurat, algorithm = 4, resolution = c(0.1, 0.2, 0.3, 0.5, 0.8), method = 'igraph')
+flow_seurat <- RunUMAP(flow_seurat, reduction = 'pca', dims = 1:5)
+saveRDS(flow_seurat, file = "full_marieke_markers.rds")
+
+# Stemmies
+# stemmies <- subset(flow_seurat, subset = NPM1.cluster == 'NPM1(1)')
+
+stemmies_marieke_clustered <- ScaleData(stemmies, features = non_unique)
+stemmies_marieke_clustered <- RunPCA(object = stemmies_marieke_clustered, features = non_unique)
+stemmies_marieke_clustered <- FindNeighbors(stemmies_marieke_clustered, dims = 1:5)
+stemmies_marieke_clustered <- FindClusters(stemmies_marieke_clustered, algorithm = 4, resolution = c(0.1, 0.2, 0.3, 0.5, 0.8), method = 'igraph')
+stemmies_marieke_clustered <- RunUMAP(stemmies_marieke_clustered, reduction = 'pca', dims = 1:5)
+saveRDS(stemmies_marieke_clustered, file = "stemmies_marieke_markers.rds")
+```
+
+
+### Reading the flow data and creating a merged Seurat object from it
+```{r}
+renamefeats <- function(flow_file) {
+  feats <- rownames(flow_file)
+  feats[feats == 'BUV805.A___CLL.1'] <- 'CD371-CLEC12A'# CLL1
+  feats[feats == 'BV605.A___CD11c'] <- 'CD11c'# CD11c
+  feats[feats == 'APC.Fire.810.A___HLA.DR'] <- 'HLA-DR' # HLA-DR
+  feats[feats == 'PE.Cy5.A___CD117'] <- 'CD117-c-kit' # CD117-c-kit
+  feats[feats == 'BUV496.A___CD16'] <- 'CD16' # CD16
+  feats[feats == 'BV421.A___CD3'] <- 'CD3' # CD3
+  feats[feats == 'BV650.A___CD61'] <- 'CD61' # CD61
+  feats[feats == 'PE.Fire810.A___CD38'] <- 'CD38.1' # CD38.1
+  feats[feats == 'BUV563.A___GPR56'] <- 'GPR56' # GPR56
+  feats[feats == 'V450.A___CD14'] <- 'CD14.1' # CD14.1
+  feats[feats == 'BV711.A___CD206'] <- 'CD206-MMR' # CD206-MMR
+  feats[feats == 'APC.A___CD34'] <- 'CD34.1' # CD34.1
+  feats[feats == 'BUV661.A___CD163'] <- 'CD163.1' # CD163.1
+  feats[feats == 'BV750.A___CD45RA'] <- 'CD45RA' # CD45RA
+  feats[feats == 'PE.A___CD33'] <- 'CD33.1' # CD33.1
+  feats[feats == 'cFluor.R720.A___CD123'] <- 'CD123' # CD123
+  feats[feats == 'SparkViolet538.A'] <- 'CD45' # CD45
+  feats[feats == 'APC.Fire.750.A___ICAM1'] <- 'CD54' # CD54
+  return(feats)
+}
+
+# Gather file locations and prepare sample names
+flow_files <- list.files('flow_data/', pattern = '*.csv', full.names = T)
+# flow_files <- list.files('new_fdaNorm/', pattern = '*.csv', full.names = T)
+
+sample_names <- sapply(strsplit(flow_files, '[_ //]+'), '[[', 3)
+# sample_names <- gsub(".csv", "", sample_names)
+sample_names <- gsub("[A-Z]", "", sample_names)
+
+# Load flow files
+all_flow_files <- lapply(flow_files, FUN = read.csv, sep = ',', header = T, )
+all_flow_files <- lapply(all_flow_files, function(df) df[, !names(df) %in% 'Time'])
+all_flow_files <- lapply(all_flow_files, t)
+all_flow_files <- lapply(all_flow_files, function(x) {
+  colnames(x) = 1:ncol(x)
+  rownames(x) <- renamefeats(x)
+  return(x)
+})
+
+
+names(all_flow_files) <- sample_names
+
+# Add idents to each Seuratobject
+flow_seurats <- lapply(all_flow_files, CreateSeuratObject, assay = 'AB')
+for (i in names(flow_seurats)) {
+  flow_seurats[[i]]$orig.ident <- i
+}
+
+# Merge all seurat objects
+flow_seurat <- merge(x = flow_seurats[[1]], y = flow_seurats[-1], add.cell.ids = sample_names, project = 'flow_NPM1')
+
+# Remove clutter
+rm(i, sample_names, flow_files, all_flow_files, flow_seurats)
+```
+
+
+
+### Run Seurat workflow
+```{r}
+# For Seurat v5
+flow_seurat <- JoinLayers(flow_seurat)
+
+flow_seurat <- ScaleData(flow_seurat, features = final_clust_features)
+flow_seurat <- RunPCA(object = flow_seurat, features = final_clust_features)
+
+
+#### Regular
+flow_seurat <- FindNeighbors(flow_seurat, dims = 1:25)
+flow_seurat <- FindClusters(flow_seurat, algorithm = 4, resolution = c(0.1, 0.2, 0.3, 0.5, 0.8), method = 'igraph')
+flow_seurat <- RunUMAP(flow_seurat, reduction = 'pca', dims = 1:25)
+# saveRDS(flow_seurat, file = "blank.rds")
+```
+
+
+
+### Standard Plotting
+```{r}
+DimPlot(flow_seurat, group.by = "flow_snn_res.0.3", label = T, reduction = 'umap', raster = F, shuffle = T) + theme(aspect.ratio = 1)
+DimPlot(flow_seurat, group.by = "patient", label = T, reduction = 'umap', raster = F, shuffle = T) + theme(aspect.ratio = 1)
+
+DimPlot(flow_seurat, group.by = "RNR_simple", label = T, reduction = 'umap', raster = F, shuffle = T) + theme(aspect.ratio = 1)
+DimPlot(flow_seurat, group.by = "NPM1.cluster", label = T, reduction = 'umap', raster = F, shuffle = T, cols = NPM1.cluster.colors) + theme(aspect.ratio = 1)
+DotPlot(flow_seurat, features = all.proteins, col.min = 0, scale.min = 0, group.by = 'flow_snn_res.0.5', scale = T) + coord_flip() + theme(aspect.ratio = 1.3)
+
+
+FeaturePlot(flow_seurat, features = c('BUV496.A---CD16', 'BV750.A---CD45RA', 'BUV737.A---LILRB4', 'APC.Fire.750.A---ICAM1'), raster = T, max.cutoff = 'q99') & theme(aspect.ratio = 1)
+
+FeaturePlot(flow_seurat, features = Marieke_markers, raster = F, max.cutoff = 'q99') & theme(aspect.ratio = 1)
+
+FeaturePlot(flow_seurat, features = c('SSC.H', 'SSC.A', 'FSC.H', 'FSC.A'), raster = F, max.cutoff = 'q99') & theme(aspect.ratio = 1)
+
+FeaturePlot(flow_seurat, features = 'BV421.A---CD3', raster = F, max.cutoff = 'q99') + theme(aspect.ratio = 1)
+
+
+FeaturePlot(flow_seurat, features = c('BV650.A---CD61'), raster = F, min.cutoff = "q05", max.cutoff = "q95") + theme(aspect.ratio = 1)
+
+
+DotPlot(flow_seurat, features = all.proteins, col.min = 0, scale.min = 0, group.by = 'patient', scale = F) + coord_flip() + theme(aspect.ratio = 1)
+
+# Ridgeplot colored by NPM1 group
+group_colors <- c('10535' = '#00BFC4', '6160' = '#7CAE00', 
+                 '10594' = '#F8766D', '10418' = '#F8766D', 
+                 '9448' = '#C77CFF', '9899' = '#7CAE00', 
+                 '10197' = '#F8766D', '6498' = '#F8766D', 
+                 '7015' = '#C77CFF', '2536' = '#00BFC4', 
+                 '5904' = '#C77CFF', '11207' = '#F8766D', 
+                 '4443' = '#7CAE00', '8861' = '#F8766D', 
+                 '3370' = '#00BFC4', '10437'= '#F8766D', '6089' = '#F8766D', '6395' = '#C77CFF', '2899' = '#C77CFF')
+
+group_colors_onur <- c('10535' = '#BB3754FF', '6160' = '#56106EFF', 
+                            '10594' = '#000004FF', '10418' = '#000004FF', 
+                            '9448' = '#F98C0AFF', '9899' = '#56106EFF', 
+                            '10197' = '#000004FF', '6498' = '#000004FF', 
+                            '7015' = '#F98C0AFF', '2536' = '#BB3754FF', 
+                            '5904' = '#F98C0AFF', '11207' = '#000004FF', 
+                            '4443' = '#56106EFF', '8861' = '#000004FF', 
+                            '3370' = '#BB3754FF', '10437'= '#000004FF')
+
+RNR_colors <- c('10594' = 'NPM1(1)', '10418' = 'NPM1(1)', 
+                '10197' = 'NPM1(1)', '6498' = 'NPM1(1)',
+                '11207' = 'NPM1(1)', '8861' = 'NPM1(1)',
+                '10437'= 'NPM1(1)')
+
+RidgePlot(flow_seurat, features = features_no_scatter, group.by = 'patient', cols = group_colors)
+
+
+### All markers
+feet <- lapply(features_no_scatter, FeaturePlot, object = flow_seurat, raster = T, max.cutoff = 'q99')
+patchwork::wrap_plots(feet, nrow = 4)
+
+
+# Scatter correlation flow vs RNA
+rna_ob_list <- SplitObject(rna_seurat, split.by = 'patient')
+flow_ob_list <- SplitObject(flow_seurat, split.by = 'patient')
+
+allpat <- levels(flow_seurat$patient) %>% paste('X', ., sep = '')
+
+medianRNA <- lapply(rna_ob_list, FetchData, vars = 'PTPRC') %>% lapply(., function(x) median(x$PTPRC)) %>% as.data.frame() %>% .[c(allpat)]
+mediansparky <- lapply(flow_ob_list, FetchData, vars = 'SparkViolet538.A')  %>% lapply(., function(x) median(x$SparkViolet538.A)) %>% as.data.frame() %>% .[c(allpat)]
+median45ra <- lapply(flow_ob_list, FetchData, vars = 'BV750.A---CD45RA')  %>% lapply(., function(x) median(x$`BV750.A---CD45RA`)) %>% as.data.frame() %>% .[c(allpat)]
+
+medianRNA[2,] <- mediansparky[1, ]
+medianRNA[3,] <- median45ra[1, ]
+rownames(medianRNA) <- c('PTPRC', 'SparkViolet538.A', 'CD45RA')
+medianRNA <- medianRNA %>% t() %>% as.data.frame()
+rownames(medianRNA) <- gsub(x = rownames(medianRNA), pattern = '[A-Z]', replacement = '')
+```
+
+### Investigating NPM1 (1)
+```{r Investigaing NPM1(1)}
+stemmies <- subset(flow_seurat, subset = NPM1.cluster == 'NPM1(1)')
+DotPlot(stemmies, features = all.proteins, scale.min = 0, col.min = 0, scale = T, group.by = 'RNR_simple') + coord_flip() + theme(aspect.ratio = 1.5)
+VlnPlot(stemmies, features = c('PE.A---CD33', 'BV750.A---CD45RA'), group.by = 'RNR_simple', pt.size = 0, split.by = 'patient', cols = patient.colors) & geom_boxplot(position=position_dodge(1)) & theme(axis.title.x = element_blank()) & stat_compare_means(comparisons = test_sign, label = "p.signif")
+
+clustered_stemmies <- readRDS('no_zomb_clustered_stemmies.rds')
+
+clustered_stemmies <- ScaleData(object = stemmies, features = rownames(stemmies))
+clustered_stemmies <- RunPCA(object = clustered_stemmies, features = final_clust_features)
+ElbowPlot(clustered_stemmies)
+clustered_stemmies <- FindNeighbors(clustered_stemmies, dims = 1:25)
+clustered_stemmies <- FindClusters(clustered_stemmies, algorithm = 4, resolution = c(0.2, 0.5), method = 'igraph')
+clustered_stemmies <- RunUMAP(clustered_stemmies, reduction = 'pca', dims = 1:25)
+
+# saveRDS(clustered_stemmies, 'no_zomb_clustered_stemmies.rds')
+
+
+DimPlot(clustered_stemmies, raster = F, shuffle = T, label = T, group.by = 'patient', cols = flow_patient.colors) + theme(aspect.ratio = 1)
+DimPlot(clustered_stemmies, raster = F, shuffle = T, label = T, group.by = 'RNR') + theme(aspect.ratio = 1)
+DimPlot(clustered_stemmies, raster = F, shuffle = T, label = T, group.by = 'flow_snn_res.0.3') + theme(aspect.ratio = 1)
+DotPlot(clustered_stemmies, features = features_no_scatter, col.min = 0, scale.min = 0) + coord_flip() + theme(aspect.ratio = 1.5)
+FeaturePlot(clustered_stemmies, features = c('BV750.A---CD45RA', 'PE.Cy5.A---CD117', 'APC.A---CD34'), raster = F, max.cutoff = 'q99') + theme(aspect.ratio = 1)
+
+FeaturePlot(clustered_stemmies, features = features_no_scatter[1:14], raster = F, max.cutoff = 'q99') & theme(aspect.ratio = 1)
+
+FeaturePlot(clustered_stemmies, features = 'Zombie.Red.A---Viability', raster = F, max.cutoff = 'q99') + theme(aspect.ratio = 1)
+
+### All markers featureplots
+feet <- lapply(features_no_scatter, FeaturePlot, object = clustered_stemmies, raster = F, max.cutoff = 'q99')
+patchwork::wrap_plots(feet, nrow = 4)
+```
+
+
+### Fixing Onur's colours
+```{r}
+load('colors.RDS')
+flow_patient.colors <- patient.colors[c(14, 1, 5, 12, 13, 15, 16, 8, 9, 3, 6, 7, 4, 2, 10, 11)]
+patient.colors <- patient.colors[c(14, 1, 5, 12, 13, 15, 16, 8, 9, 3, 6, 7, 4, 2, 10, 11)]
+names(flow_patient.colors) <- levels(flow_seurat$patient)
+flow_patient.colors['6089'] <- '#196292'
+flow_patient.colors['6395'] <- '#629219'
+flow_patient.colors['2899'] <- '#921962'
+save(flow_patient.colors, NPM1.cluster.colors, cluster.colors, file = "colors.Rdata")
+load('colors.Rdata')
+```
+
+
+
+### Plotting split data
+```{r}
+######### Dotplots p patient flow
+flow_ob.list <- SplitObject(flow_seurat, split.by = "combined")
+flow_ob.list <- flow_ob.list[c(levels(flow_seurat$combined))]
+plot.list <- lapply(X = flow_ob.list, FUN = function(x) {
+  # DimPlot(x, reduction = "umap", label = T, group.by = 'flow_snn_res.0.1', raster = F) + #ggtitle(unique(x$patient))
+  DotPlot(x, features = all.proteins, scale.min = 0, col.min = 0, group.by = 'flow_snn_res.0.5') + coord_flip() + ggtitle(unique(x$combined))
+})
+plot.list <- plot.list[c(levels(flow_seurat$combined))]
+patchwork::wrap_plots(plot.list, ncol = 4) + theme(aspect.ratio = 1)
+
+
+######### Dotplots p patient RNA
+rna_ob.list <- SplitObject(rna_seurat, split.by = "combined")
+rna_ob.list <- rna_ob.list[c(levels(rna_seurat$combined))]
+rna_plot.list <- lapply(X = rna_ob.list, FUN = function(x) {
+  # DimPlot(x, reduction = "umap", label = T, group.by = 'flow_snn_res.0.1', raster = F) + #ggtitle(unique(x$patient))
+  DotPlot(x, features = panelN_new, scale.min = 0, col.min = 0, group.by = 'RNA_snn_res.0.4') + coord_flip() + ggtitle(unique(x$combined))
+})
+rna_plot.list <- rna_plot.list[c(levels(rna_seurat$combined))]
+patchwork::wrap_plots(rna_plot.list, ncol = 4) + theme(aspect.ratio = 1)
+
+## merge the two plot lists
+joined_plots <- c(rbind(plot.list, rna_plot.list))
+patchwork::wrap_plots(joined_plots, ncol = 2)
+
+ggsave(
+   filename = "dotplots_patientvspatient_flow_vs_rna.pdf", 
+   plot = marrangeGrob(joined_plots, nrow=1, ncol=2), 
+   width = 20, height = 10
+)
+
+
+############ NPM1 and patient spread
+flow_ob.list <- SplitObject(flow_seurat, split.by = 'NPM1.cluster')
+flow_ob.list <- flow_ob.list[c(levels(flow_seurat$NPM1.cluster))]
+
+plot.list <- lapply(X = flow_ob.list, FUN = function(x) {
+  DimPlot(x, reduction = "umap", label = T, group.by = 'patient', raster = F, cols = flow_patient.colors, shuffle = T) + ggtitle(unique(x$NPM1.cluster)) + theme_pubclean() + theme(legend.key = element_rect(fill = NA))
+})
+patchwork::wrap_plots(plot.list, ncol = 2)
+
+
+################## boxplot marker expression p x
+ob_list <- SplitObject(flow_seurat, split.by = "full")
+ob_list <- ob_list[c(levels(flow_seurat$full))]
+
+rna_ob_list <- SplitObject(rna_seurat, split.by = "seurat_clusters")
+rna_ob_list <- rna_ob_list[c(levels(rna_seurat$full))]
+
+flow_stemmies <- subset(rna_seurat, subset = NPM1.cluster == 'NPM1(1)')
+rna_ob_list_stemmies <- SplitObject(rna_stemmies, split.by = "RNR_simple")
+
+flow_ob_list_stemmies <- SplitObject(stemmies, split.by = "RNR_simple")
+
+
+boxplots <- lapply(names(flow_ob_list_stemmies), function(x) {
+  long_data <- FetchData(flow_ob_list_stemmies[[x]],
+                    vars = all.proteins,
+                    slot = "data") %>% reshape2::melt()
+  ggplot(long_data,
+       aes(x = variable, y = value, fill = variable)) +
+  geom_boxplot() + xlab(label = 'Protein') + ylab(label = 'Expression')  + ggtitle(label = x) + theme_pubclean() + NoLegend() + theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
+})
+
+wrap_plots(boxplots, ncol = 1, nrow = 2)
+
+boxplots <- lapply(names(flow_ob_list_stemmies), function(x) {
+  long_data <- FetchData(flow_ob_list_stemmies[[x]],
+                    vars = all.proteins,
+                    slot = "data") %>% reshape2::melt()
+  ggplot(long_data,
+       aes(x = variable, y = value, fill = variable)) +
+  geom_boxplot() + NoLegend() + xlab(label = 'Protein') + ylab(label = 'Expression') & theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) & ylim(c(0, 6)) & stat_summary(fun.y=mean, geom = 'point', color = 'red') & ggtitle(label = x) # + ggtitle(label = unique(x$full)) 
+})
+boxplots <- boxplots[c(1,2,5,3,4,6,7)]
+patchwork::wrap_plots(boxplots, ncol = 8) & theme(aspect.ratio = 1.2, axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) & ylim(c(-1, 6)) & stat_summary(fun.y=mean, geom = 'point', color = 'red')
+
+ggsave(
+   filename = "clusters_rna_expression_boxplots.pdf", 
+   plot = marrangeGrob(boxplots, nrow = 3, ncol = 1), 
+   width = 18, height = 10
+)
+
+
+VlnPlot(flow_seurat, features = c("BV750.A---CD45RA", "BUV737.A---LILRB4"), pt.size = 0, group.by = 'RNR_simple') &
+  NoLegend() & geom_boxplot() & 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) &
+  geom_signif(comparisons = list(c("Response", "No response"), c("Response", 'NA'), c('No response', 'NA')),  map_signif_level = T,
+              step_increase = 0.15) & ylim(c(-3, 6)) 
+
+
+CD45RA <- lapply(ob_list, FetchData, slot = 'data', vars = 'BV750.A---CD45RA')
+PTPRC <- lapply(rna_ob_list, FetchData, slot = 'data', vars = 'PTPRC')
+full_cd45 <- c(rbind(CD45RA, PTPRC))
+
+boxplots2 <- lapply(full_cd45, function(x){
+  reshape2::melt(x) %>% ggplot(., aes(x = variable, y = value, fill = variable)) + geom_boxplot() + NoLegend()
+})
+
+```
+
+
+### scRNA-seq data analysis
+```{r}
+DimPlot(rna_seurat, group.by = 'integrated_snn_res.0.4', shuffle = T, label = T) + theme(aspect.ratio = 1)
+DimPlot(rna_seurat, group.by = 'NPM1.cluster', shuffle = T, label = T, cols = NPM1.cluster.colors) + theme(aspect.ratio = 1)
+DimPlot(rna_seurat, group.by = 'Patient', shuffle = T, label = T, cols = patient.colors) + theme(aspect.ratio = 1)
+DimPlot(rna_seurat, group.by = 'onurcluster', shuffle = T, label = T, cols = cluster.colors) + theme(aspect.ratio = 1)
+DotPlot(rna_seurat, group.by = 'integrated_snn_res.0.4', features = panelN_future, col.min = 0, scale.min = 0, assay = 'RNA') + coord_flip() + theme(aspect.ratio = 1)
+FeaturePlot(rna_seurat_clustered, features = c('PTPRC', 'MPO', 'CD69', 'CD99'), max.cutoff = 'q95') + theme(aspect.ratio = 1)
+
+rna_R_1 <- subset(rna_seurat, subset = NPM1.cluster == 'NPM1(1)' & RNR_simple == 'Response')
+rna_NR_1 <- subset(rna_seurat, subset = NPM1.cluster == 'NPM1(1)' & RNR_simple == 'No response')
+rna_R <- subset(rna_seurat, subset = RNR_simple == 'Response')
+FeatureScatter(rna_R, feature1 = feat1, feature2 = feat2, group.by = 'Patient', cols = patient.colors, shuffle = T) + ggpubr::stat_cor(label.x = 2.5) + theme_pubr() + theme(aspect.ratio = 0.6)
+
+rna_list <- SplitObject(rna_seurat, split.by = 'Patient')
+rna_list <- rna_list[c(levels(rna_seurat$Patient))]
+
+scatterfeat <- function(object, feat1, feat2, patient){
+  return(FeatureScatter(object, feature1 = feat1, feature2 = feat2, group.by = 'Patient', shuffle = T, cols = patient.colors) + ggpubr::stat_cor(label.x = 2, label.y = 3.5) + theme_pubr() + ggtitle(label = patient)) + theme(legend.position = 'none', text = element_text(size = 14))
+}
+
+scatters <- lapply(seq_along(rna_list), function(i) scatterfeat(rna_list[[i]], feat1 = 'MPO', feat2 = 'PTPRC', patient = names(rna_list[i])))
+names(scatters) <- names(rna_list)
+patchwork::wrap_plots(scatters, ncol = 4) & NoLegend()
+
+eq <- lapply(scatters, function(x) {
+  rownames(x$data[x$data$MPO == x$data$PTPRC & x$data$MPO != 0, ])
+})
+eq_cells <- reshape2::melt(eq) %>% .$value
+
+DotPlot(AML.combined, group.by = 'integrated_snn_res.0.4', features = panelN, col.min = 0, scale.min = 0, scale = T) + coord_flip() + theme(aspect.ratio = 1.5, axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+### rnaSeq stemmies
+```{r}
+rna_stemmies <- subset(rna_seurat, subset = NPM1.cluster == 'NPM1(1)')
+
+DefaultAssay(rna_stemmies) <- 'integrated'
+rna_stemmies_clustered <- ScaleData(object = rna_stemmies)
+rna_stemmies_clustered <- RunPCA(object = rna_stemmies_clustered)
+# ElbowPlot(rna_stemmies_clustered)
+rna_stemmies_clustered <- FindNeighbors(rna_stemmies_clustered, dims = 1:30)
+rna_stemmies_clustered <- FindClusters(rna_stemmies_clustered, algorithm = 4, resolution = c(0.2, 0.5), method = 'igraph')
+rna_stemmies <- FindClusters(rna_stemmies, algorithm = 4, resolution = c(0.6, 0.8), method = 'igraph')
+rna_stemmies_clustered <- RunUMAP(rna_stemmies_clustered, reduction = 'pca', dims = 1:30)
+saveRDS(rna_stemmies_clustered, 'rna_stemmies_clusterd.rds')
+```
+
+
+
+### scRNA DEG
+```{r}
+library(MAST)
+rna_stemmies <- subset(rna_seurat, subset = NPM1.cluster == 'NPM1(1)')
+
+stemmy_markers <- FindMarkers(object = rna_stemmies, group.by = 'RNR_simple', ident.1 = 'No response', ident.2 = 'Response', test.use = 'MAST', max.cells.per.ident = 10000, min.pct = 0.25)
+stemmy_markers <- stemmy_markers %>% tibble::rownames_to_column(var = 'Gene')
+stemmy_markers <- stemmy_markers %>% 
+    arrange(desc(abs(avg_log2FC)))
+
+rna_RNR_markers <- FindMarkers(object = rna_seurat, group.by = 'RNR_simple', ident.1 = 'No response', ident.2 = 'Response', test.use = 'MAST', max.cells.per.ident = 10000)
+rna_RNR_markers <- rna_RNR_markers %>% tibble::rownames_to_column(var = 'Gene')
+rna_RNR_markers <- rna_RNR_markers %>% 
+    arrange(desc(abs(avg_log2FC)))
+
+# saveRDS(stemmy_markers, 'stemmy_markers.rds')
+# saveRDS(rna_RNR_markers, 'rna_RNR_markers.rds')
+
+### Look at which genes code for surface proteins
+surface_protein_atlas <- read_excel("CPA.xlsx", sheet = "Table A")
+hits <- subset(stemmy_markers, stemmy_markers$Gene %in% surface_protein_atlas$`ENTREZ gene symbol`)
+
+hits_stemmies <- merge(y = surface_protein_atlas, x = stemmy_markers, by.y = 'ENTREZ gene symbol', by.x = 'Gene')
+hits_stemmies <- hits_stemmies %>% 
+    arrange(desc(abs(avg_log2FC)))
+
+
+
+stemmy_markers <- readRDS('stemmy_markers.rds')
+rna_RNR_markers <- readRDS('rna_RNR_markers.rds')
+```
+
+
+### Trying scRNA-seq integration
+```{r}
+# split the dataset into a list of seurat objects
+AML.list <- SplitObject(rna_seurat, split.by = "Patient")
+
+# normalize and identify variable features for each dataset independently
+AML.list <- lapply(X = AML.list, FUN = function(x) {
+    x <- NormalizeData(x)
+    x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 2000)
+})
+
+AML.anchors <- FindIntegrationAnchors(object.list = AML.list, anchor.features = panelN_future)
+saveRDS(AML.anchors, 'aml.anchors2.rds')
+# this command creates an 'integrated' data assay
+AML.combined <- IntegrateData(anchorset = AML.anchors)
+saveRDS(AML.combined, 'aml.combined.rds')
+
+AML.combined <- readRDS('aml.combined.rds')
+
+DefaultAssay(rna_seurat) <- 'integrated'
+# Run the standard integration workflow for visualization and clustering
+rna_seurat <- ScaleData(rna_seurat, features = panelN_future)
+rna_seurat <- RunPCA(rna_seurat, features = panelN)
+# ElbowPlot(rna_seurat, ndims = 32)
+rna_seurat_clustered <- FindNeighbors(rna_seurat, reduction = "pca", dims = 1:16)
+rna_seurat_clustered <- FindClusters(rna_seurat_clustered, resolution = c(0.04, 0.4), algorithm = '4', method = 'igraph')
+rna_seurat_clustered <- RunUMAP(rna_seurat_clustered, reduction = "pca", dims = 1:16)
+
+# saveRDS(AML.combined, 'aml.clustered.rds')
+
+rna_seurat_clusterd <- readRDS('rna_seurat_clustered.rds')
+```
+
+
+### Heatmaps
+```{r heatmaps}
+# Sort cells based on expression
+smallseurat <- subset(flow_seurat, downsample = 1000)
+small_feature_expression <- FetchData(smallseurat, vars = 'BV750.A---CD45RA')
+small_feature_expression_ordered <- small_feature_expression %>% arrange(desc(!!sym('BV750.A---CD45RA')))
+p <- DoHeatmap(smallseurat, cells = rownames(small_feature_expression_ordered), features = rownames(smallseurat), size = 3, group.by = 'ordered') + NoLegend()
+p
+
+# Loop through all markers
+smallseurat <- subset(flow_seurat, downsample = 1000)
+plot.list <- list()
+for (protein in rownames(smallseurat)) {
+  print(protein)
+  marker_exp <- FetchData(smallseurat, vars = protein)
+  print(marker)
+  marker_exp <- marker_exp %>% arrange(desc(!!sym(protein)))
+  append(plot.list, DoHeatmap(smallseurat, cells = rownames(small_feature_expression_ordered), features = rownames(smallseurat), size = 3, group.by = 'ordered') + NoLegend())
+}
+
+heatmaps <- lapply(X = rownames(smallseurat), FUN = function(x) {
+  marker_exp <- FetchData(smallseurat, vars = x) %>% arrange(desc(!!sym(x)))
+  DoHeatmap(smallseurat, cells = rownames(marker_exp), features = rownames(smallseurat), size = 3, group.by = 'ordered', raster = F) + NoLegend() + ggtitle(paste(x))
+})
+names(heatmaps) <- rownames(smallseurat)
+
+
+ggsave(
+   filename = "flow_sorted_heatmaps.pdf", 
+   plot = marrangeGrob(heatmaps, nrow=1, ncol=1), 
+   width = 18, height = 10
+)
+
+```
+
+
+### Barplots
+```{r}
+pt <- table(flow_seurat$patient, flow_seurat$flow_snn_res.0.1)
+pt <- table(clustered_stemmies$patient, clustered_stemmies$flow_snn_res.0.5)
+pt <- table(flow_seurat$RNR_simple, flow_seurat$flow_snn_res.0.5)
+pt <- table(flow_seurat$patient, flow_seurat$NPM1.cluster)
+pt <- table(flow_seurat$nCount_flow, flow_seurat$orig.ident)
+pt <- as.data.frame(pt)
+pt$Var1 <- as.character(pt$Var1)
+
+# Stacked + percent pos = fill or pos = stack
+ggplot(arrange(pt, Var1), aes(fill=Var1, y=Freq, x=Var2)) + 
+  geom_bar(position="stack", stat="identity") + xlab('Cluster') + ylab('Number of cells') + 
+  guides(fill=guide_legend(title="Patient")) + theme(aspect.ratio = 1)
+# + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+barplot.seurat <- function(obj, id1, id2){
+
+    df.plot <- obj@meta.data %>% 
+    group_by(.[[id1]]) %>%
+    count(.[[id2]]) %>%
+    mutate(Perc = n / sum(n) * 100) 
+
+    colnames(df.plot)[1:2] <- c(id1, id2)
+
+    ggplot(df.plot, aes_string(id1, "Perc", fill = id2)) + 
+    geom_bar(stat = "identity") + ylab("% of cells") +
+    guides(x = guide_axis(angle = 90)) + theme_minimal() 
+}
+
+
+
+ggplot(flow_seurat@meta.data, aes(x = patient, fill=NPM1.cluster)) + 
+  geom_bar(stat="count") + coord_flip() + xlab('Patient') + ylab('Number of cells') + geom_text(stat = "count", aes(label = ..count..), hjust = -0.05) +
+  ylim(0, 75000)
+```
+
